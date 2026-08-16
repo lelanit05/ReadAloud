@@ -39,6 +39,8 @@ const els = {
   micHelp: document.querySelector("#mic-help"),
   micHelpText: document.querySelector("#mic-help-text"),
   copyUrl: document.querySelector("#copy-url"),
+  levelMeter: document.querySelector("#level-meter"),
+  levelBar: document.querySelector("#level-bar"),
 };
 
 const state = {
@@ -74,13 +76,16 @@ const reader = createReader((update) => {
   if (update.error) {
     els.status.textContent = update.error;
     els.status.className = "status is-error";
-    showMicHelp(update.error);
+    if (update.micHelp) showMicHelp(update.error);
   } else if (update.message) {
     els.status.textContent = update.message;
     els.status.className = "status is-listening";
   }
   if (typeof update.liveText === "string") els.liveText.textContent = update.liveText;
   if (typeof update.listening === "boolean") setListening(update.listening);
+  if (typeof update.level === "number" && els.levelBar) {
+    els.levelBar.style.width = `${Math.round(update.level * 100)}%`;
+  }
   if (typeof update.busy === "boolean") {
     els.micBtn.disabled = update.busy;
     if (update.busy) els.micLabel.textContent = "Đang xử lý…";
@@ -100,6 +105,8 @@ function setListening(on) {
   els.micLabel.textContent = on ? "Dừng" : micLabel();
   els.listenBtn.disabled = on;
   els.listenAllBtn.disabled = on;
+  if (els.levelMeter) els.levelMeter.hidden = !on;
+  if (!on && els.levelBar) els.levelBar.style.width = "0%";
 }
 
 function micLabel() {
@@ -450,9 +457,7 @@ els.micBtn.addEventListener("click", () => {
   els.liveText.textContent = "";
   els.status.textContent = "Đang bật micro…";
   els.status.className = "status is-listening";
-  const pending = navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true },
-  });
+  const pending = navigator.mediaDevices.getUserMedia({ audio: true });
   void reader.start(pending);
 });
 

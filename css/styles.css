@@ -342,6 +342,22 @@ textarea {
   font-size: 14px;
 }
 
+.level-meter {
+  height: 8px;
+  background: #efe7d8;
+  border-radius: 99px;
+  overflow: hidden;
+  margin: 12px 0 8px;
+}
+
+.level-meter span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--ok);
+  transition: width 80ms linear;
+}
+
 .live-text:not(:empty)::before {
   content: "Bạn đang nói: ";
   color: var(--muted);

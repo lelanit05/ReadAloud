@@ -1,4 +1,4 @@
-import { preloadWhisper, transcribeAudioBlob } from "./whisper.js";
+import { concatPcm, preloadWhisper, transcribePcm } from "./whisper.js";
 
 function speechCtor() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -8,9 +8,15 @@ export function speechSupported() {
   return Boolean(speechCtor()) || Boolean(navigator.mediaDevices?.getUserMedia);
 }
 
-function pickMime() {
-  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/mpeg"];
-  return types.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || "";
+export function isIOS() {
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+export function isMobile() {
+  return isIOS() || /Android|Mobile/i.test(navigator.userAgent);
 }
 
 function pageUrl() {
@@ -36,26 +42,27 @@ export function explainMicError(error) {
   const name = error?.name || "";
   const message = error?.message || "";
   if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-    return "Quyền micro bị từ chối. Trong Chrome: bấm icon mic trên thanh địa chỉ → Allow. Trên Mac: System Settings → Privacy & Security → Microphone → bật cho Google Chrome.";
+    return "Quyền micro bị từ chối. Cho phép mic cho trình duyệt này trong Cài đặt, rồi tải lại trang.";
   }
   if (name === "SecurityError" || /insecure|security/i.test(message)) {
-    return `Lỗi bảo mật: mở cửa sổ Chrome thật (không phải preview Cursor) tại ${pageUrl()}`;
+    return `Lỗi bảo mật: mở cửa sổ trình duyệt thật tại ${pageUrl()}`;
   }
   if (name === "NotFoundError") return "Không tìm thấy micro.";
-  if (name === "NotReadableError") return "Micro đang bị Zoom/Meet hoặc app khác dùng. Tắt app đó rồi thử lại.";
-  return `Không vào được micro${name ? ` (${name})` : ""}. Mở Chrome tại ${pageUrl()} rồi Allow micro.`;
+  if (name === "NotReadableError") return "Micro đang bị app khác dùng. Tắt cuộc gọi/ghi âm khác rồi thử lại.";
+  return `Không vào được micro${name ? ` (${name})` : ""}. Cho phép mic rồi thử lại.`;
 }
 
 export function createReader(onUpdate) {
   let listening = false;
   let busy = false;
   let stream = null;
-  let recorder = null;
-  let chunks = [];
   let recognition = null;
   let finals = [];
   let interim = "";
-  let stopResolver = null;
+  let audioCtx = null;
+  let pcmNodes = null;
+  let pcmChunks = [];
+  let startedAt = 0;
 
   function liveTranscript() {
     return [...finals, interim].join(" ").replace(/\s+/g, " ").trim();
@@ -73,21 +80,28 @@ export function createReader(onUpdate) {
       }
     }
     recognition = null;
-    if (recorder && recorder.state !== "inactive") {
+    if (pcmNodes) {
       try {
-        recorder.stop();
+        pcmNodes.processor.onaudioprocess = null;
+        pcmNodes.source.disconnect();
+        pcmNodes.processor.disconnect();
+        pcmNodes.mute.disconnect();
       } catch {
         /* ignore */
       }
     }
-    recorder = null;
+    pcmNodes = null;
+    if (audioCtx) {
+      audioCtx.close().catch(() => {});
+    }
+    audioCtx = null;
     if (stream) stream.getTracks().forEach((track) => track.stop());
     stream = null;
   }
 
   function startWebSpeech() {
     const Ctor = speechCtor();
-    if (!Ctor) return;
+    if (!Ctor) return false;
     finals = [];
     interim = "";
     recognition = new Ctor();
@@ -107,7 +121,7 @@ export function createReader(onUpdate) {
     recognition.onerror = (event) => {
       if (event.error === "aborted" || event.error === "no-speech") return;
       if (event.error === "not-allowed") {
-        onUpdate({ error: "Chưa cấp quyền micro. Cho phép mic cho trang này rồi bấm lại." });
+        onUpdate({ error: explainMicError({ name: "NotAllowedError" }), micHelp: true });
       }
     };
     recognition.onend = () => {
@@ -119,21 +133,47 @@ export function createReader(onUpdate) {
         } catch {
           /* already started */
         }
-      }, 250);
+      }, 400);
     };
     try {
       recognition.start();
+      return true;
     } catch {
       recognition = null;
+      return false;
     }
+  }
+
+  async function startPcmCapture(mediaStream) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return;
+    audioCtx = new Ctor();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    const mute = audioCtx.createGain();
+    mute.gain.value = 0;
+    pcmChunks = [];
+    processor.onaudioprocess = (event) => {
+      if (!listening) return;
+      const data = event.inputBuffer.getChannelData(0);
+      pcmChunks.push(new Float32Array(data));
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 1) sum += data[i] * data[i];
+      const rms = Math.sqrt(sum / data.length);
+      onUpdate({ listening: true, level: Math.min(1, rms * 10) });
+    };
+    source.connect(processor);
+    processor.connect(mute);
+    mute.connect(audioCtx.destination);
+    pcmNodes = { source, processor, mute };
   }
 
   async function start(streamPromise) {
     if (listening || busy) {
       if (streamPromise) {
         try {
-          const extra = await streamPromise;
-          extra.getTracks().forEach((track) => track.stop());
+          (await streamPromise).getTracks().forEach((track) => track.stop());
         } catch {
           /* ignore */
         }
@@ -144,26 +184,26 @@ export function createReader(onUpdate) {
       onUpdate({
         listening: false,
         error: explainMicError({ name: "SecurityError" }),
+        micHelp: true,
       });
       return;
     }
 
     listening = true;
-    chunks = [];
     finals = [];
     interim = "";
-    onUpdate({ listening: true, liveText: "", error: "", message: "Đang bật micro…" });
+    pcmChunks = [];
+    startedAt = Date.now();
+    onUpdate({ listening: true, liveText: "", error: "", message: "Đang bật micro…", level: 0 });
 
     try {
-      stream = await (streamPromise ||
-        navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
-        }));
+      stream = await (streamPromise || navigator.mediaDevices.getUserMedia({ audio: true }));
     } catch (error) {
       listening = false;
       onUpdate({
         listening: false,
         error: explainMicError(error),
+        micHelp: true,
       });
       return;
     }
@@ -174,39 +214,32 @@ export function createReader(onUpdate) {
       return;
     }
 
-    void preloadWhisper().catch(() => {});
+    const mobile = isMobile();
+    if (mobile) void preloadWhisper().catch(() => {});
 
-    if (window.MediaRecorder) {
-      const mime = pickMime();
-      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) chunks.push(event.data);
-      };
-      recorder.onstop = () => {
-        if (stopResolver) {
-          stopResolver();
-          stopResolver = null;
-        }
-      };
-      recorder.start(200);
-    }
+    await startPcmCapture(stream);
 
-    const safari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-    if (!safari) startWebSpeech();
+    // Web Speech + recording on the same mic often fails on phones.
+    if (!mobile) startWebSpeech();
+
     onUpdate({
       listening: true,
       liveText: "",
       error: "",
-      message: "Đang nghe… đọc câu màu vàng, rồi bấm Dừng.",
+      message: mobile
+        ? "Đang nghe… thanh xanh phải nhấp nháy khi bạn nói. Đọc xong mới bấm Dừng."
+        : "Đang nghe… đọc câu màu vàng, rồi bấm Dừng.",
     });
   }
 
   async function stop(emit = true) {
     listening = false;
     busy = true;
-    onUpdate({ listening: false, busy: true, message: "Đang nhận lời nói…" });
-
     const live = liveTranscript();
+    const rate = audioCtx?.sampleRate || 48000;
+    const elapsed = Date.now() - startedAt;
+    const pcm = concatPcm(pcmChunks);
+
     if (recognition) {
       try {
         recognition.stop();
@@ -215,43 +248,29 @@ export function createReader(onUpdate) {
       }
     }
 
-    if (!recorder) {
-      cleanupMic();
-      busy = false;
-      if (emit && live) onUpdate({ listening: false, busy: false, liveText: live, finalText: live, message: "" });
-      else if (emit) onUpdate({ listening: false, busy: false, error: "Micro chưa kịp bật. Bấm lại Bắt đầu đọc." });
-      else onUpdate({ listening: false, busy: false });
-      return;
-    }
-
-    const mimeType = recorder.mimeType || chunks[0]?.type || "audio/webm";
-    const stopped = new Promise((resolve) => {
-      stopResolver = resolve;
-      window.setTimeout(resolve, 800);
-    });
-    if (recorder.state !== "inactive") {
-      try {
-        recorder.stop();
-      } catch {
-        stopResolver?.();
-      }
-    } else {
-      stopResolver?.();
-    }
-    await stopped;
-
-    const blob = new Blob(chunks, { type: mimeType });
     cleanupMic();
 
     if (!emit) {
       busy = false;
-      onUpdate({ listening: false, busy: false });
+      onUpdate({ listening: false, busy: false, level: 0 });
       return;
     }
 
-    if (live) {
+    const liveOk = live.split(/\s+/).filter(Boolean).length >= 3;
+    if (liveOk) {
       busy = false;
-      onUpdate({ listening: false, busy: false, liveText: live, finalText: live, message: "" });
+      onUpdate({ listening: false, busy: false, liveText: live, finalText: live, message: "", level: 0 });
+      return;
+    }
+
+    if (elapsed < 800 || pcm.length < rate * 0.5) {
+      busy = false;
+      onUpdate({
+        listening: false,
+        busy: false,
+        level: 0,
+        error: "Ghi quá ngắn hoặc chưa thấy tiếng. Giữ mic, nói hết câu (2–4 giây), thanh xanh phải nhấp nháy, rồi mới Dừng.",
+      });
       return;
     }
 
@@ -259,11 +278,14 @@ export function createReader(onUpdate) {
       listening: false,
       busy: true,
       liveText: "",
-      message: "Đang nhận lời nói… lần đầu có thể mất chút thời gian.",
+      level: 0,
+      message: isMobile()
+        ? "Đang nhận lời nói trên máy… lần đầu có thể mất 30–60 giây."
+        : "Đang nhận lời nói…",
     });
 
     try {
-      const text = await transcribeAudioBlob(blob, (message) => {
+      const text = await transcribePcm(pcm, rate, (message) => {
         onUpdate({ listening: false, busy: true, message });
       });
       busy = false;
@@ -272,7 +294,7 @@ export function createReader(onUpdate) {
         onUpdate({
           listening: false,
           busy: false,
-          error: "Chưa nhận được lời nói. Giữ nút Dừng sau khi đọc xong câu.",
+          error: "Chưa nhận ra câu. Nói gần mic, chậm hơn một chút, rồi thử lại.",
         });
       }
     } catch (error) {
@@ -280,7 +302,7 @@ export function createReader(onUpdate) {
       onUpdate({
         listening: false,
         busy: false,
-        error: error?.message || "Không nhận được giọng nói. Thử lại trên Chrome và cho phép micro.",
+        error: error?.message || "Không nhận được giọng nói. Thử Chrome trên điện thoại và nói gần mic.",
       });
     }
   }

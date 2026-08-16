@@ -2,6 +2,17 @@ const TARGET_RATE = 16000;
 
 let transcriberPromise = null;
 
+export function concatPcm(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
 export function preloadWhisper(onStatus = () => {}) {
   if (!transcriberPromise) transcriberPromise = loadTranscriber(onStatus);
   return transcriberPromise;
@@ -25,13 +36,13 @@ async function loadTranscriber(onStatus) {
   });
 }
 
-export async function transcribeAudioBlob(blob, onStatus = () => {}) {
-  const transcriber = await preloadWhisper(onStatus);
-  onStatus("Đang nhận lời nói…");
-  const audio = await decodeToMono16k(blob);
-  if (audio.length < TARGET_RATE * 0.3) {
+export async function transcribePcm(pcm, inputRate, onStatus = () => {}) {
+  const audio = inputRate === TARGET_RATE ? pcm : resample(pcm, inputRate, TARGET_RATE);
+  if (audio.length < TARGET_RATE * 0.5) {
     throw new Error("Đoạn ghi quá ngắn. Giữ mic, đọc hết câu, rồi bấm Dừng.");
   }
+  const transcriber = await preloadWhisper(onStatus);
+  onStatus("Đang nhận lời nói…");
   const result = await transcriber(audio, {
     language: "english",
     task: "transcribe",
@@ -40,27 +51,10 @@ export async function transcribeAudioBlob(blob, onStatus = () => {}) {
   return text.trim();
 }
 
-async function decodeToMono16k(blob) {
-  const buffer = await blob.arrayBuffer();
-  const ctx = new AudioContext();
-  const decoded = await ctx.decodeAudioData(buffer.slice(0));
-  await ctx.close();
-  const mono = decoded.numberOfChannels === 1 ? decoded.getChannelData(0) : mixMono(decoded);
-  return resample(mono, decoded.sampleRate, TARGET_RATE);
-}
-
-function mixMono(decoded) {
-  const a = decoded.getChannelData(0);
-  const b = decoded.getChannelData(1);
-  const out = new Float32Array(a.length);
-  for (let i = 0; i < a.length; i += 1) out[i] = (a[i] + b[i]) * 0.5;
-  return out;
-}
-
 function resample(input, fromRate, toRate) {
   if (fromRate === toRate) return input;
   const ratio = fromRate / toRate;
-  const out = new Float32Array(Math.round(input.length / ratio));
+  const out = new Float32Array(Math.max(1, Math.round(input.length / ratio)));
   for (let i = 0; i < out.length; i += 1) {
     const x = i * ratio;
     const i0 = Math.floor(x);
