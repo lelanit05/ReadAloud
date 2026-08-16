@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Read Aloud — luyện đọc tiếng Anh</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./css/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div>
+          <p class="eyebrow">Read Aloud</p>
+          <h1>Đọc, nhớ, rồi kể lại</h1>
+        </div>
+        <p id="browser-note" class="browser-note">
+          Dùng Google Chrome, cho phép micro. Không mở trong tab preview của Cursor.
+        </p>
+      </header>
+
+      <aside id="mic-help" class="mic-help" hidden>
+        <strong>Micro bị chặn</strong>
+        <p id="mic-help-text"></p>
+        <ol>
+          <li>Mở <b>Google Chrome</b> (cửa sổ trình duyệt thật).</li>
+          <li>Mở đúng địa chỉ HTTPS của trang (hoặc <code>http://127.0.0.1:5173</code> khi chạy local).</li>
+          <li>Bấm Bắt đầu đọc → chọn <b>Allow</b>.</li>
+          <li>Mac: System Settings → Privacy &amp; Security → Microphone → bật cho Google Chrome.</li>
+        </ol>
+        <button type="button" class="primary" id="copy-url">Copy địa chỉ</button>
+      </aside>
+
+      <section class="toolbar">
+        <label class="field">
+          <span>Đoạn văn</span>
+          <select id="passage-select"></select>
+        </label>
+        <button type="button" class="ghost" id="paste-toggle">Dán đoạn của bạn</button>
+      </section>
+
+      <nav id="stage-nav" class="stages" aria-label="Các bước luyện"></nav>
+
+      <div id="custom-box" class="custom-box" hidden>
+        <textarea
+          id="custom-text"
+          rows="5"
+          placeholder="Dán đoạn tiếng Anh vào đây, rồi bấm Dùng đoạn này."
+        ></textarea>
+        <button type="button" class="primary" id="use-custom">Dùng đoạn này</button>
+      </div>
+
+      <div class="layout">
+        <article class="passage-card">
+          <div class="passage-meta">
+            <span id="passage-title"></span>
+            <span id="progress-label"></span>
+          </div>
+          <p id="passage-body" class="passage-body"></p>
+        </article>
+
+        <section class="practice-card">
+          <p class="kicker" id="stage-kicker">Câu hiện tại</p>
+          <p id="stage-hint" class="stage-hint"></p>
+          <p id="prompt-text" class="prompt-text" hidden></p>
+          <p id="current-sentence" class="current-sentence"></p>
+
+          <div id="word-result" class="word-result" hidden></div>
+          <p id="spoken-line" class="spoken-line" hidden></p>
+          <p id="score-line" class="score-line" hidden></p>
+
+          <div class="controls">
+            <button type="button" class="ghost" id="listen-btn">Nghe câu này</button>
+            <button type="button" class="ghost" id="listen-all-btn">Nghe cả đoạn</button>
+            <button type="button" class="ghost" id="peek-btn" hidden>Lộ chữ 2 giây</button>
+            <button type="button" class="mic" id="mic-btn" aria-pressed="false">
+              <span class="mic-dot"></span>
+              <span id="mic-label">Bắt đầu đọc</span>
+            </button>
+            <button type="button" class="ghost" id="retry-btn" hidden>Đọc lại</button>
+            <button type="button" class="primary" id="next-btn" hidden>Câu tiếp</button>
+            <button type="button" class="primary" id="advance-btn">Sang bước Đọc</button>
+          </div>
+
+          <p id="live-text" class="live-text"></p>
+          <p id="status" class="status"></p>
+        </section>
+      </div>
+
+      <section id="done-card" class="done-card" hidden>
+        <h2>Xong đoạn văn</h2>
+        <p id="done-summary"></p>
+        <button type="button" class="ghost" id="restart-btn">Luyện lại từ bước Nghe</button>
+      </section>
+    </div>
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>
