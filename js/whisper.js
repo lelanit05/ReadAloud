@@ -25,6 +25,12 @@ async function loadTranscriber(onStatus) {
   );
   env.allowLocalModels = false;
   env.useBrowserCache = true;
+  // GitHub Pages is not cross-origin isolated; threaded WASM fails on phones.
+  if (env.backends?.onnx?.wasm) {
+    env.backends.onnx.wasm.numThreads = 1;
+    env.backends.onnx.wasm.proxy = false;
+  }
+
   return pipeline("automatic-speech-recognition", "Xenova/whisper-tiny.en", {
     quantized: true,
     progress_callback: (progress) => {
@@ -36,19 +42,45 @@ async function loadTranscriber(onStatus) {
   });
 }
 
+function boostWaveform(pcm, inputRate) {
+  const audio = inputRate === TARGET_RATE ? new Float32Array(pcm) : resample(pcm, inputRate, TARGET_RATE);
+  let mean = 0;
+  for (let i = 0; i < audio.length; i += 1) mean += audio[i];
+  mean /= audio.length || 1;
+  let peak = 0;
+  for (let i = 0; i < audio.length; i += 1) {
+    audio[i] -= mean;
+    peak = Math.max(peak, Math.abs(audio[i]));
+  }
+  if (peak < 0.004) {
+    throw new Error("Đã bật mic nhưng tiếng quá nhỏ. Nói sát micro hơn, tắt loa ngoài (tránh vọng), rồi thử lại.");
+  }
+  const gain = Math.min(0.85 / peak, 25);
+  for (let i = 0; i < audio.length; i += 1) audio[i] *= gain;
+  return audio;
+}
+
 export async function transcribePcm(pcm, inputRate, onStatus = () => {}) {
-  const audio = inputRate === TARGET_RATE ? pcm : resample(pcm, inputRate, TARGET_RATE);
+  const audio = boostWaveform(pcm, inputRate);
   if (audio.length < TARGET_RATE * 0.5) {
     throw new Error("Đoạn ghi quá ngắn. Giữ mic, đọc hết câu, rồi bấm Dừng.");
   }
-  const transcriber = await preloadWhisper(onStatus);
+
   onStatus("Đang nhận lời nói…");
-  const result = await transcriber(audio, {
-    language: "english",
-    task: "transcribe",
-  });
-  const text = (Array.isArray(result) ? result[0]?.text : result?.text) || "";
-  return text.trim();
+  try {
+    const transcriber = await preloadWhisper(onStatus);
+    // Do not pass language/task: whisper-tiny.en breaks on those prompts.
+    const result = await transcriber(audio);
+    const text = (Array.isArray(result) ? result[0]?.text : result?.text) || "";
+    return text.trim();
+  } catch (error) {
+    transcriberPromise = null;
+    const message = String(error?.message || error);
+    if (/fetch|network|Load|404|Failed/i.test(message)) {
+      throw new Error("Không tải được model nhận giọng (cần mạng ổn định lần đầu). Thử Wi‑Fi rồi đọc lại.");
+    }
+    throw new Error(message || "Model nhận giọng lỗi trên trình duyệt này.");
+  }
 }
 
 function resample(input, fromRate, toRate) {

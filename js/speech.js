@@ -215,11 +215,28 @@ export function createReader(onUpdate) {
     }
 
     const mobile = isMobile();
+    const canSpeech = Boolean(speechCtor());
+
+    // Phones: prefer the native speech API (no WASM). Only record PCM when that API is missing.
+    if (mobile && canSpeech) {
+      const ok = startWebSpeech();
+      onUpdate({
+        listening: true,
+        liveText: "",
+        error: "",
+        message: ok
+          ? "Đang nghe… chữ hiện bên dưới khi nhận được. Đọc hết câu rồi bấm Dừng."
+          : "Không bật được nhận giọng nhanh. Thử lại hoặc dùng Wi‑Fi.",
+      });
+      if (!ok) {
+        void preloadWhisper().catch(() => {});
+        await startPcmCapture(stream);
+      }
+      return;
+    }
+
     if (mobile) void preloadWhisper().catch(() => {});
-
     await startPcmCapture(stream);
-
-    // Web Speech + recording on the same mic often fails on phones.
     if (!mobile) startWebSpeech();
 
     onUpdate({
@@ -235,10 +252,7 @@ export function createReader(onUpdate) {
   async function stop(emit = true) {
     listening = false;
     busy = true;
-    const live = liveTranscript();
-    const rate = audioCtx?.sampleRate || 48000;
-    const elapsed = Date.now() - startedAt;
-    const pcm = concatPcm(pcmChunks);
+    onUpdate({ listening: false, busy: true, message: "Đang gộp lời nói…", level: 0 });
 
     if (recognition) {
       try {
@@ -246,7 +260,13 @@ export function createReader(onUpdate) {
       } catch {
         /* ignore */
       }
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
     }
+
+    const live = liveTranscript();
+    const rate = audioCtx?.sampleRate || 48000;
+    const elapsed = Date.now() - startedAt;
+    const pcm = concatPcm(pcmChunks);
 
     cleanupMic();
 
@@ -256,10 +276,23 @@ export function createReader(onUpdate) {
       return;
     }
 
-    const liveOk = live.split(/\s+/).filter(Boolean).length >= 3;
+    const liveOk = live.split(/\s+/).filter(Boolean).length >= 2;
     if (liveOk) {
       busy = false;
       onUpdate({ listening: false, busy: false, liveText: live, finalText: live, message: "", level: 0 });
+      return;
+    }
+
+    if (!pcm.length) {
+      busy = false;
+      onUpdate({
+        listening: false,
+        busy: false,
+        level: 0,
+        error: live
+          ? `Mới nhận được “${live}”. Nói rõ hơn, hết câu, rồi Dừng.`
+          : "Chưa nhận được câu. Nói sát mic, đọc hết câu, đợi chữ hiện rồi mới Dừng.",
+      });
       return;
     }
 
@@ -269,7 +302,7 @@ export function createReader(onUpdate) {
         listening: false,
         busy: false,
         level: 0,
-        error: "Ghi quá ngắn hoặc chưa thấy tiếng. Giữ mic, nói hết câu (2–4 giây), thanh xanh phải nhấp nháy, rồi mới Dừng.",
+        error: "Ghi quá ngắn. Giữ mic, nói hết câu (2–4 giây), rồi mới Dừng.",
       });
       return;
     }
